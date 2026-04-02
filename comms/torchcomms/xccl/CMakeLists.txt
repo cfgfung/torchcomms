@@ -24,12 +24,14 @@ message(STATUS "XCCL library         : ${XCCL_SHARED_LIB}")
 
 file(GLOB TORCHCOMMS_XCCL_SOURCES "comms/torchcomms/xccl/*.cpp")
 file(GLOB TORCHCOMMS_XPU_API_SOURCE "comms/torchcomms/device/xpu/XpuApi.cpp")
+file(GLOB TORCHCOMMS_XPU_SYCL_KERNEL_SOURCE "comms/torchcomms/device/xpu/SyclKernel.cpp")
 
 include(FindPackageHandleStandardArgs)
 
 add_library(torchcomms_comms_xccl MODULE
     ${TORCHCOMMS_XCCL_SOURCES}
     ${TORCHCOMMS_XPU_API_SOURCE}
+    ${TORCHCOMMS_XPU_SYCL_KERNEL_SOURCE}
 )
 set_target_properties(torchcomms_comms_xccl PROPERTIES
     PREFIX ""
@@ -62,7 +64,7 @@ SET(XCCL_COMPILE_OPTIONS -Wall -Wextra)
 # Enable additional warnings and treat them as errors if XCCL_WERROR is set
 set(XCCL_WERROR $ENV{XCCL_WERROR})
 if(XCCL_WERROR)
-    list(APPEND XCCL_COMPILE_OPTIONS -Wpedantic -Werror)
+    list(APPEND XCCL_COMPILE_OPTIONS -Wpedantic -Werror -fsycl)
 endif()
 
 message(STATUS "XCCL compile options : ${XCCL_COMPILE_OPTIONS}")
