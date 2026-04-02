@@ -3,7 +3,7 @@
 #include "comms/torchcomms/device/xpu/XpuApi.hpp"
 
 namespace torch::comms {
-    int CloneAndMulKernel(const xpuStream_t &stream, at::Tensor &src, at::Tensor &dst, const float &factor){
+    int CloneAndMulKernel(const xpuStream_t &stream, const at::Tensor &src, at::Tensor &dst, const double &factor){
         try {
             sycl::queue q = stream.queue();
             auto* src_data = src.data_ptr<float>();
