@@ -808,7 +808,16 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::all_reduce(
   const auto maybe_new_op = [&]() -> ReduceOp {
     if (op == ReduceOp::RedOpType::PREMUL_SUM) {
       c10::StreamGuard guard(stream);
-      applyPreMulFactor(tensor, op);
+      //applyPreMulFactor(tensor, op);
+      //std::cout << "Running this actually" << std::endl;
+      if (tensor.scalar_type() == at::kFloat){
+	double factor = std::get<double>(*op.factor());
+	MulKernel(stream, tensor, factor);
+	std::cout << "In custom kernel" << std::endl;
+      }
+      else{
+	applyPreMulFactor(tensor, op);
+      }
       return ReduceOp(ReduceOp::RedOpType::SUM);
     } else if (op == ReduceOp::RedOpType::AVG) {
       return ReduceOp(ReduceOp::RedOpType::SUM);

@@ -59,12 +59,12 @@ target_link_libraries(torchcomms_comms_xccl PRIVATE
     ${XCCL_SHARED_LIB}
 )
 
-SET(XCCL_COMPILE_OPTIONS -Wall -Wextra)
+SET(XCCL_COMPILE_OPTIONS -Wall -Wextra -fsycl -fsycl-targets=spir64)
 
 # Enable additional warnings and treat them as errors if XCCL_WERROR is set
 set(XCCL_WERROR $ENV{XCCL_WERROR})
 if(XCCL_WERROR)
-    list(APPEND XCCL_COMPILE_OPTIONS -Wpedantic -Werror -fsycl)
+    list(APPEND XCCL_COMPILE_OPTIONS -Wpedantic -Werror)
 endif()
 
 message(STATUS "XCCL compile options : ${XCCL_COMPILE_OPTIONS}")
