@@ -10,6 +10,7 @@
 #include "comms/torchcomms/utils/TracingGuard.hpp"
 #include "comms/torchcomms/utils/Utils.hpp"
 #include "comms/torchcomms/xccl/TorchCommXCCLBootstrap.hpp"
+#include "comms/torchcomms/device/xpu/SyclKernel.hpp"
 
 namespace torch::comms {
 
@@ -77,6 +78,10 @@ static std::pair<T, ReduceOp> getMaybeScaledInputsAndNewOp(
     if constexpr (std::is_same_v<T, at::Tensor>) {
       at::Tensor scaled_input = input.clone();
       applyPreMulFactor(scaled_input, op);
+      //double factor = std::get<double>(*op.factor());
+      //at::Tensor scaled_input = at::empty_like(input);
+      //CloneAndMulKernel(stream, input, scaled_input, factor);
+      //std::cout << "Entered getMaybeScaledInputsAndNewOp - path 1" << std::endl;
       return {std::move(scaled_input), ReduceOp(ReduceOp::RedOpType::SUM)};
     } else if constexpr (std::is_same_v<T, std::vector<at::Tensor>>) {
       std::vector<at::Tensor> scaled_inputs;
@@ -84,6 +89,10 @@ static std::pair<T, ReduceOp> getMaybeScaledInputsAndNewOp(
       for (const auto& tensor : input) {
         at::Tensor scaled_input = tensor.clone();
         applyPreMulFactor(scaled_input, op);
+	//double factor = std::get<double>(*op.factor());
+      	//at::Tensor scaled_input = at::empty_like(tensor);
+      	//CloneAndMulKernel(stream, tensor, scaled_input, factor);
+      	//std::cout << "Entered getMaybeScaledInputsAndNewOp - path 2" << std::endl;
         scaled_inputs.push_back(std::move(scaled_input));
       }
       return {std::move(scaled_inputs), ReduceOp(ReduceOp::RedOpType::SUM)};

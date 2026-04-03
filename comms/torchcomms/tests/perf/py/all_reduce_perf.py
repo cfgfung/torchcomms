@@ -39,6 +39,7 @@ def run_all_reduce_perf(
         # Warmup
         for _ in range(params.warmup_iterations):
             work = comm.all_reduce(tensor, torchcomms.ReduceOp.SUM, params.async_op)
+            #work = comm.all_reduce(tensor, torchcomms.ReduceOp.PREMUL_SUM, params.async_op)
             if params.async_op:
                 work.wait()
 
@@ -52,6 +53,7 @@ def run_all_reduce_perf(
 
         for i in range(params.measure_iterations):
             work = comm.all_reduce(tensor, torchcomms.ReduceOp.SUM, params.async_op)
+            #work = comm.all_reduce(tensor, torchcomms.ReduceOp.PREMUL_SUM, params.async_op)
             if params.async_op:
                 work.wait()
 
