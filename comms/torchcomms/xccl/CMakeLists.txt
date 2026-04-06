@@ -70,6 +70,7 @@ endif()
 message(STATUS "XCCL compile options : ${XCCL_COMPILE_OPTIONS}")
 
 target_compile_options(torchcomms_comms_xccl PRIVATE ${XCCL_COMPILE_OPTIONS})
+target_link_options(torchcomms_comms_xccl PRIVATE -fsycl -fsycl-targets=spir64)
 
 install(TARGETS torchcomms_comms_xccl
     LIBRARY DESTINATION .
