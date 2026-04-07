@@ -5,7 +5,6 @@
 #include "comms/torchcomms/device/xpu/XpuApi.hpp"
 
 namespace torch::comms {
-    // Create a new tensor -- at::empty_like, uninitialized
-    // Read the memory and multiply it into the new tensor
+    // Read the memory and perform inplace multiplication
     int MulKernel(const xpuStream_t &stream, at::Tensor &src, const double &factor);
 } // namespace torch::comms
