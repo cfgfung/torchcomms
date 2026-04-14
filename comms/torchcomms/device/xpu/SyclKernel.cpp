@@ -41,4 +41,26 @@ namespace torch::comms {
 
         return 0;
     }
+
+    int DivKernel(const xpuStream_t &stream, at::Tensor &src, const float &factor, const bool &trunc){
+        try {
+            sycl::queue q = stream.queue();
+            auto* src_ptr = src.data_ptr<float>();
+            int64_t numel = src.numel();
+            const float reciprocal = 1.0/factor;
+
+            q.submit([&](sycl::handler& h) {
+                h.parallel_for(sycl::range<1>(numel), [=](sycl::id<1> i) {
+                    src_ptr[i] *= reciprocal;
+		    src_ptr[i] = trunc? static_cast<int>(src_ptr[i]) : src_ptr[i]; 
+                });
+            });
+
+        } catch (sycl::exception const& e) {
+            std::cerr << "SYCL exception caught: " << e.what() << "\n";
+            return 1;
+        }
+
+        return 0;
+    }
 } // namespace torch::comms
