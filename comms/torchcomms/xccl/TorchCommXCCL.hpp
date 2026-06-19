@@ -15,6 +15,7 @@
 #include <ATen/ATen.h>
 #include <torch/csrc/distributed/c10d/Store.hpp> // @manual=//caffe2:torch-cpp
 
+#include <ishmem.h>
 #include "comms/torchcomms/TorchComm.hpp"
 #include "comms/torchcomms/TorchCommBackend.hpp"
 #include "comms/torchcomms/TorchCommBatch.hpp"
@@ -298,6 +299,11 @@ class TorchCommXCCL : public TorchCommBackend,
     INITIALIZED,
     FINALIZED,
   } init_state_;
+
+  // ISHMEM memory
+  float* sym_src_;
+  float* sym_dst_;
+  bool all_intranode_{false};
 
   // XCCL API abstraction
   std::shared_ptr<XcclApi> xccl_api_;

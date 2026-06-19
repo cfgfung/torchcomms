@@ -9,18 +9,30 @@ if(NOT DEFINED ENV{CCL_ROOT})
     return()
 endif()
 
-# Set XCCL paths
+# Set XCCL and ISHMEM paths
 set(XCCL_INCLUDE "$ENV{CCL_ROOT}/include")
 set(XCCL_SHARED_LIB "$ENV{CCL_ROOT}/lib/libccl.so.2")
+set(ISHMEM_INCLUDE "${CMAKE_CURRENT_SOURCE_DIR}/comms/torchcomms/xccl/third_party/ISHMEM/include")
+set(ISHMEM_SHARED_LIB "${CMAKE_CURRENT_SOURCE_DIR}/comms/torchcomms/xccl/third_party/ISHMEM/lib/libishmem.a")
 
-# Validate oneCCL installation
+message(STATUS "XCCL include path    : ${XCCL_INCLUDE}")
+message(STATUS "XCCL library         : ${XCCL_SHARED_LIB}")
+message(STATUS "ISHMEM include path  : ${ISHMEM_INCLUDE}")
+message(STATUS "ISHMEM library       : ${ISHMEM_SHARED_LIB}")
+
+# Set ISHMEM to include necessary libs 
+set(ISHMEM_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/comms/torchcomms/xccl/third_party/ISHMEM")
+find_package(ISHMEM REQUIRED PATHS ${ISHMEM_ROOT}/lib/cmake/ishmem)
+
+# Validate oneCCL and ISHMEM installation
 if(NOT EXISTS "${XCCL_INCLUDE}" OR NOT EXISTS "${XCCL_SHARED_LIB}")
     message(WARNING "Invalid oneCCL path. Skipping XCCL backend compilation.")
     return()
 endif()
-
-message(STATUS "XCCL include path    : ${XCCL_INCLUDE}")
-message(STATUS "XCCL library         : ${XCCL_SHARED_LIB}")
+if(NOT EXISTS "${ISHMEM_INCLUDE}" OR NOT EXISTS "${ISHMEM_SHARED_LIB}")
+    message(WARNING "Invalid Intel Shared Memory path. Skipping ISHMEM backend compilation.")
+    return()
+endif()
 
 file(GLOB TORCHCOMMS_XCCL_SOURCES "comms/torchcomms/xccl/*.cpp")
 file(GLOB TORCHCOMMS_XPU_API_SOURCE "comms/torchcomms/device/xpu/XpuApi.cpp")
@@ -42,6 +54,7 @@ set_target_properties(torchcomms_comms_xccl PROPERTIES
 target_include_directories(torchcomms_comms_xccl PRIVATE
     ${ROOT}
     ${XCCL_INCLUDE}
+    ${ISHMEM_INCLUDE}
     ${CONDA_INCLUDE}
     ${Python3_INCLUDE_DIRS}
 )
@@ -55,7 +68,9 @@ target_link_libraries(torchcomms_comms_xccl PRIVATE
 
 target_link_libraries(torchcomms_comms_xccl PRIVATE
     ${XCCL_SHARED_LIB}
+    ISHMEM::ISHMEM
 )
+
 
 SET(XCCL_COMPILE_OPTIONS -Wall -Wextra)
 

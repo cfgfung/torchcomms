@@ -2,11 +2,15 @@
 
 #include <ATen/xpu/XPUContext.h>
 #include <c10/xpu/XPUStream.h>
+#include <comms/torchcomms/xccl/third_party/ISHMEM/include/ishmem.h>
+#include <comms/torchcomms/xccl/third_party/ISHMEM/include/ishmemx.h>
+#include <dlfcn.h>
 #include <cstdlib>
 #include <stdexcept>
 #include <string>
 #include "comms/torchcomms/TorchCommFactory.hpp"
 #include "comms/torchcomms/utils/Logging.hpp"
+#include "comms/torchcomms/utils/StoreManager.hpp"
 #include "comms/torchcomms/utils/TracingGuard.hpp"
 #include "comms/torchcomms/utils/Utils.hpp"
 #include "comms/torchcomms/xccl/TorchCommXCCLBootstrap.hpp"
@@ -267,6 +271,51 @@ void TorchCommXCCL::init(
     }
   }
 
+  // INIT Intel Shared Memory
+  ishmemx_uniqueid_t unique_id;
+  memset(&unique_id, 0, sizeof(unique_id));
+
+  auto [rank, world_size] = torch::comms::query_ranksize();
+  int device_idx = rank;
+
+  if (rank == 0) {
+    int ret = ishmemx_get_uniqueid(&unique_id);
+    if (ret != 0) {
+      std::cout << "Erorr in initializing Intel Shared Memory." << std::endl;
+    }
+  }
+
+  // Broadcast the unique ID from rank 0 to all other ranks
+  auto store = torch::comms::createPrefixStore(
+      "ishmem", std::chrono::milliseconds(300000));
+
+  const std::string key = "ishmem_uid";
+  if (rank == 0) {
+    std::vector<uint8_t> data(
+        reinterpret_cast<uint8_t*>(&unique_id),
+        reinterpret_cast<uint8_t*>(&unique_id) + sizeof(unique_id));
+    store->set(key, data);
+  } else {
+    auto data = store->get(key);
+    memcpy(&unique_id, data.data(), sizeof(unique_id));
+  }
+
+  ishmemx_attr_t attr;
+  attr.initialize_runtime = false;  // The above oneCCL code already initialized a MPI runtime
+  attr.use_uid = true;
+  attr.rank = rank;
+  attr.nranks = world_size;
+  attr.uid = &unique_id;
+  attr.device_idx = device_idx;
+  ishmemx_init_attr(&attr);
+
+  int major, minor;
+  ishmem_info_get_version(&major, &minor);
+
+  sym_src_ = (float*)ishmem_malloc(16777216 * sizeof(float));
+  sym_dst_ = (float*)ishmem_malloc(16777216 * sizeof(float));
+  all_intranode_ = (ishmem_n_pes() == ishmem_team_n_pes(ISHMEMX_TEAM_NODE));
+
   // Set XPU device and verify it' accessible
   XPU_CHECK(
       xpu_api_,
@@ -352,7 +401,6 @@ void TorchCommXCCL::init(
   if (result != onecclSuccess) [[unlikely]] {
     throw std::runtime_error("XCCL commCount failed");
   }
-
   TracingGuard tracingGuard(name_, comm_size_, "init", rank_);
 
   // Start timeout watchdog thread
@@ -452,6 +500,11 @@ void TorchCommXCCL::finalize() {
     }
     xccl_comm_ = nullptr;
   }
+
+  // Cleanup Intel Shared Memory
+  ishmem_free(sym_src_);
+  ishmem_free(sym_dst_);
+  ishmem_finalize(); // End ISHMEM
 }
 
 void TorchCommXCCL::abortXcclComm() {
@@ -815,49 +868,110 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::all_reduce(
   //
   // TODO: remove this workaround when oneCCL fully supports PREMUL_SUM/AVG
   // reductions natively.
-  const auto maybe_new_op = [&]() -> ReduceOp {
+
+  size_t N = tensor.numel();
+  
+  if (N <= 16384 && tensor.scalar_type() == at::kFloat &&
+      all_intranode_ ) { // Check for intra-node, datatype and
+    // Fused kernel - for small data buffer to reduce the kernel launch.
+    // Limitation: The ishmemx_*_reduce_work_group() posed a constraint to the
+    // parallism. Only 1 WG for 1 PE.
+
+    float* data_ptr = tensor.data_ptr<float>();
+    float inv_div =
+        1.0f / static_cast<float>(comm_size_); // fuse scale and division
+    float pre_mul = 1.0f;
+
+    // Update the pre_mul value if this is a pre_mul op
     if (op == ReduceOp::RedOpType::PREMUL_SUM) {
-      c10::StreamGuard guard(stream);
-      applyPreMulFactor(tensor, op);
-      return ReduceOp(ReduceOp::RedOpType::SUM);
-    } else if (op == ReduceOp::RedOpType::AVG) {
-      return ReduceOp(ReduceOp::RedOpType::SUM);
+      TORCH_CHECK(
+          op.factor().has_value(), "PREMUL_SUM requires a scaling factor");
+      const auto& factor_var = *op.factor();
+      if (std::holds_alternative<double>(factor_var)) {
+        pre_mul = static_cast<float>(std::get<double>(factor_var));
+      } else if (std::holds_alternative<at::Tensor>(factor_var)) {
+        // If it's a tensor, extract the float value from it
+        pre_mul = std::get<at::Tensor>(factor_var).item<float>();
+      }
     }
-    return op;
-  }();
 
-  const auto dataType = getXcclDataType(tensor);
-  onecclResult_t result = xccl_api_->allReduce(
-      tensor.data_ptr(),
-      tensor.data_ptr(), // In-place operation
-      tensor.numel(),
-      dataType,
-      getXcclReduceOp(maybe_new_op, xccl_comm_, dataType),
-      xccl_comm_,
-      stream);
+    sycl::queue q = stream.queue();
 
-  if (result != onecclSuccess) [[unlikely]] {
-    throw XCCLException(*xccl_api_, "XCCL allReduce failed", result);
+    // Make a shallow copy of the symmetric memory address
+    float* sym_src = sym_src_;
+    float* sym_dst = sym_dst_;
+
+    // Single workgroup
+    size_t work_group_size = 256;
+    sycl::nd_range<1> nd_range(work_group_size, work_group_size);
+
+    q.submit([&](sycl::handler& h) {
+      h.parallel_for(nd_range, [=](sycl::nd_item<1> it) {
+        auto grp = it.get_group();
+        size_t stride = grp.get_local_linear_range();
+        size_t lid = grp.get_local_linear_id();
+
+        // Phase 1: input → sym_src, scaled by pre_mul
+        for (size_t i = lid; i < N; i += stride) {
+          sym_src[i] = data_ptr[i] * pre_mul;
+        }
+        sycl::group_barrier(grp);
+
+        // Phase 2: all-reduce sum across PEs
+        ishmemx_float_sum_reduce_work_group(sym_dst, sym_src, N, grp);
+
+        // Phase 3: divide by scale_out, copy to output
+        for (size_t i = lid; i < N; i += stride) {
+          data_ptr[i] = sym_dst[i] * inv_div;
+        }
+      });
+    });
+    //q.wait();
+  } 
+  else { // Following is the oneCCL code.
+    const auto maybe_new_op = [&]() -> ReduceOp {
+      if (op == ReduceOp::RedOpType::PREMUL_SUM) {
+        c10::StreamGuard guard(stream);
+        applyPreMulFactor(tensor, op);
+        return ReduceOp(ReduceOp::RedOpType::SUM);
+      } else if (op == ReduceOp::RedOpType::AVG) {
+        return ReduceOp(ReduceOp::RedOpType::SUM);
+      }
+      return op;
+    }();
+
+    const auto dataType = getXcclDataType(tensor);
+    onecclResult_t result = xccl_api_->allReduce(
+        tensor.data_ptr(),
+        tensor.data_ptr(), // In-place operation
+        tensor.numel(),
+        dataType,
+        getXcclReduceOp(maybe_new_op, xccl_comm_, dataType),
+        xccl_comm_,
+        stream);
+
+    if (result != onecclSuccess) [[unlikely]] {
+      throw XCCLException(*xccl_api_, "XCCL allReduce failed", result);
+    }
+
+    if (op == ReduceOp::RedOpType::AVG) {
+      // For scale-out all_reduce with AVG, oneCCL does not support AVG
+      // reduction natively on this path. We therefore perform a SUM across all
+      // ranks and then divide the result in-place by comm_size on every rank to
+      // obtain the correct average value on all ranks.
+      c10::optional<c10::string_view> rounding_mode = c10::nullopt;
+      if (c10::isIntegralType(tensor.scalar_type(), false)) {
+        // For integer tensors, we use truncation-based division to keep an
+        // integer result while matching typical integer division semantics for
+        // negative values (round toward zero).
+        rounding_mode = "trunc";
+      }
+      {
+        c10::StreamGuard guard(stream);
+        tensor.div_(comm_size_, rounding_mode);
+      }
+    }
   }
-
-  if (op == ReduceOp::RedOpType::AVG) {
-    // For scale-out all_reduce with AVG, oneCCL does not support AVG
-    // reduction natively on this path. We therefore perform a SUM across all
-    // ranks and then divide the result in-place by comm_size on every rank to
-    // obtain the correct average value on all ranks.
-    c10::optional<c10::string_view> rounding_mode = c10::nullopt;
-    if (c10::isIntegralType(tensor.scalar_type(), /*includeBool*/ false)) {
-      // For integer tensors, we use truncation-based division to keep an
-      // integer result while matching typical integer division semantics for
-      // negative values (round toward zero).
-      rounding_mode = "trunc";
-    }
-    {
-      c10::StreamGuard guard(stream);
-      tensor.div_(comm_size_, rounding_mode);
-    }
-  }
-
   work->recordEnd();
 
   enqueueWork(work, stream);
